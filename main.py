@@ -11,6 +11,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives import serialization
 import psycopg
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 load_dotenv()
 PROFILE = "ga5-mailroom-action-gate/v2"
@@ -246,7 +247,14 @@ async def propose(body):
             return JSONResponse(old["propose_response"])
         proposals=[]; fingerprints=[]
         # Insert evaluation only after all request schemas are validated.
-        conn.execute("INSERT INTO evaluations(evaluation_id,input_digest,verifier_jwk,propose_response) VALUES(%s,%s,%s,%s)", (eid,digest,jwk,{}))
+        conn.execute(
+    """
+    INSERT INTO evaluations
+    (evaluation_id, input_digest, verifier_jwk, propose_response)
+    VALUES (%s, %s, %s, %s)
+    """,
+    (eid, digest, Jsonb(jwk), Jsonb({}))
+)
         for d in ds:
             fp=digest_obj(d); fingerprints.append(fp)
             cached=conn.execute("SELECT proposal FROM dossier_cache WHERE fingerprint=%s",(fp,)).fetchone()
@@ -259,13 +267,33 @@ async def propose(body):
                 try: p=await decide(d)
                 except HTTPException: raise
                 except Exception as e: raise HTTPException(502,"AI decision failed or timed out") from e
-                conn.execute("INSERT INTO dossier_cache(fingerprint,proposal) VALUES(%s,%s) ON CONFLICT(fingerprint) DO NOTHING",(fp,p))
+                conn.execute(
+    """
+    INSERT INTO dossier_cache (fingerprint, proposal)
+    VALUES (%s, %s)
+    ON CONFLICT (fingerprint) DO NOTHING
+    """,
+    (fp, Jsonb(p))
+)
             proposals.append(p)
             pd=proposal_digest(p)
-            conn.execute("INSERT INTO evaluation_proposals(evaluation_id,dossier_id,fingerprint,proposal,proposal_digest,call_id) VALUES(%s,%s,%s,%s,%s,%s)",(eid,d["dossierId"],fp,p,pd,p["callId"]))
+            conn.execute(
+    """
+    INSERT INTO evaluation_proposals
+    (evaluation_id, dossier_id, fingerprint, proposal, proposal_digest, call_id)
+    VALUES (%s, %s, %s, %s, %s, %s)
+    """,
+    (eid, d["dossierId"], fp, Jsonb(p), pd, p["callId"])
+)
         response={"profile":PROFILE,"evaluationId":eid,"status":"awaiting_receipts","inputDigest":digest,"proposals":proposals}
-        conn.execute("UPDATE evaluations SET propose_response=%s WHERE evaluation_id=%s",(response,eid))
-        return JSONResponse(response)
+        conn.execute(
+    "UPDATE evaluations SET propose_response=%s WHERE evaluation_id=%s",
+    (Jsonb(response), eid)
+)
+        return JSONResponse(
+    status_code=200,
+    content=response
+)
 
 async def commit(body):
     required={"profile","operation","evaluationId","inputDigest","receipts"}
@@ -307,10 +335,34 @@ async def commit(body):
         for p,r,status in verified:
             out={"dossierId":p["dossier_id"],"callId":p["call_id"],"action":p["proposal"]["action"],"proposalDigest":p["proposal_digest"],"receiptId":r["receiptId"],"status":status}
             outcomes.append(out)
-            conn.execute("INSERT INTO receipts(evaluation_id,dossier_id,call_id,receipt_id,receipt_json,outcome) VALUES(%s,%s,%s,%s,%s,%s)",(eid,p["dossier_id"],p["call_id"],r["receiptId"],r,status))
+            conn.execute(
+    """
+    INSERT INTO receipts
+    (evaluation_id, dossier_id, call_id, receipt_id, receipt_json, outcome)
+    VALUES (%s, %s, %s, %s, %s, %s)
+    """,
+    (
+        eid,
+        p["dossier_id"],
+        p["call_id"],
+        r["receiptId"],
+        Jsonb(r),
+        status
+    )
+)
         response={"profile":PROFILE,"evaluationId":eid,"status":"completed","inputDigest":digest,"outcomes":outcomes}
-        conn.execute("INSERT INTO commits(evaluation_id,input_digest,request_json,response_json) VALUES(%s,%s,%s,%s)",(eid,digest,body,response))
-        return JSONResponse(response)
+        conn.execute(
+    """
+    INSERT INTO commits
+    (evaluation_id, input_digest, request_json, response_json)
+    VALUES (%s, %s, %s, %s)
+    """,
+    (eid, digest, Jsonb(body), Jsonb(response))
+)
+        return JSONResponse(
+    status_code=200,
+    content=response
+)
 
 @app.exception_handler(Exception)
 async def unexpected(request, exc):
