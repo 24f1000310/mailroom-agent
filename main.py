@@ -191,10 +191,41 @@ async def mailroom(request: Request):
     if not DATABASE_URL: raise HTTPException(500,"DATABASE_URL not configured")
     return await (propose(body) if body["operation"]=="propose" else commit(body))
 
+
 async def propose(body):
-    required={"profile","operation","evaluationId","receiptVerifier","corpus","dossiers"}
-    if set(body)!=required: raise HTTPException(400,"invalid propose envelope fields")
-    eid=body["evaluationId"]
+    required = {
+        "profile",
+        "operation",
+        "evaluationId",
+        "receiptVerifier",
+        "corpus",
+        "allowedActions",
+        "dossiers"
+    }
+
+    if set(body) != required:
+        raise HTTPException(400, "invalid propose envelope fields")
+
+    if body["profile"] != PROFILE or body["operation"] != "propose":
+        raise HTTPException(400, "invalid propose envelope")
+
+    allowed_actions = body["allowedActions"]
+
+    if not isinstance(allowed_actions, list):
+        raise HTTPException(422, "allowedActions must be an array")
+
+    if (
+        not allowed_actions
+        or len(allowed_actions) != len(set(allowed_actions))
+        or not set(allowed_actions).issubset(ACTIONS)
+    ):
+        raise HTTPException(422, "invalid allowedActions")
+
+    eid = body["evaluationId"]
+
+    if not isinstance(eid, str) or not eid:
+        raise HTTPException(422, "invalid evaluationId")
+
     if not isinstance(eid,str) or not eid: raise HTTPException(422,"invalid evaluationId")
     verifier=body["receiptVerifier"]
     if not isinstance(verifier,dict) or verifier.get("algorithm")!="Ed25519" or not isinstance(verifier.get("publicKeyJwk"),dict): raise HTTPException(422,"invalid receipt verifier")
