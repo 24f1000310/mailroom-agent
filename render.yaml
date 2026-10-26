@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: mailroom-agent
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3.5-flash-lite
+      - key: DATABASE_URL
+        sync: false
+      - key: MAX_REQUEST_BYTES
+        value: "1048576"
+      - key: MAX_DOSSIERS
+        value: "70"
+      - key: MAX_MODEL_OUTPUT_TOKENS
+        value: "12000"
+      - key: MODEL_TIMEOUT_SECONDS
+        value: "35"

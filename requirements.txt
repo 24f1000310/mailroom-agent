@@ -1,0 +1,8 @@
+
+fastapi
+uvicorn[standard]
+google-genai
+pydantic
+cryptography
+psycopg[binary]
+python-dotenv
