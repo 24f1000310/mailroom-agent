@@ -232,6 +232,90 @@ def make_proposals(dossiers):
             results[d["dossierId"]] = saved
     return [results[d["dossierId"]] for d in dossiers]
 
+
+def make_proposal(dossier):
+    """Return a cached proposal or create and validate a new one."""
+
+    # Fingerprint the complete dossier for persistent caching.
+    fingerprint = sha(dossier)
+
+    # Reuse an existing decision when this dossier was processed before.
+    with db() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT proposal FROM dossier_cache WHERE fingerprint = %s",
+                (fingerprint,)
+            )
+            row = cur.fetchone()
+
+            if row:
+                return row["proposal"]
+
+    # Generate a decision only when no cached proposal exists.
+    last_error = None
+
+    for attempt in range(2):
+        try:
+            raw = call_gemini(dossier)
+
+            # Stable ID: repeated evaluations of the same dossier
+            # will reuse the same call ID.
+            call_id = "mailroom:" + fingerprint[:48]
+
+            proposal = {
+                "dossierId": dossier["dossierId"],
+                "callId": call_id,
+                "action": raw.get("action"),
+                "target": raw.get("target"),
+                "payload": raw.get("payload"),
+                "evidence": raw.get("evidence"),
+            }
+
+            # Validate the exact frozen action schema and evidence IDs.
+            validate_proposal(
+                dossier,
+                {
+                    "action": proposal["action"],
+                    "target": proposal["target"],
+                    "payload": proposal["payload"],
+                    "evidence": proposal["evidence"],
+                },
+                set(),
+            )
+
+            # Persist the validated decision for later evaluations.
+            with db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO dossier_cache (fingerprint, proposal)
+                        VALUES (%s, %s)
+                        ON CONFLICT (fingerprint) DO NOTHING
+                        """,
+                        (fingerprint, Json(proposal)),
+                    )
+
+                    # Read the stored value in case another worker
+                    # cached the same dossier concurrently.
+                    cur.execute(
+                        "SELECT proposal FROM dossier_cache WHERE fingerprint = %s",
+                        (fingerprint,),
+                    )
+                    stored = cur.fetchone()
+
+            if stored:
+                return stored[0]
+
+            return proposal
+
+        except Exception as exc:
+            last_error = exc
+
+    raise RuntimeError(
+        f"Proposal generation failed safely: {type(last_error).__name__}"
+    )
+
+
 def proposal_digest(p):
     view = {k:p[k] for k in ("dossierId","callId","action","target","payload","evidence")}
     view["evidence"] = sorted(view["evidence"])
